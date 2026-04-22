@@ -5,144 +5,25 @@ import { randomUUID } from "crypto";
 import { keccak256, toHex } from "viem";
 import type { PrivateKeyAccount } from "viem";
 import type { ChainIdentity, ChainType } from "../identity/chain.js";
+import type {
+  ConwayClient,
+  ExecResult,
+  PortInfo,
+  CreateSandboxOptions,
+  SandboxInfo,
+  PricingTier,
+  CreditTransferResult,
+  DomainSearchResult,
+  DomainRegistration,
+  DnsRecord,
+  ModelInfo,
+} from "../types.js";
+import { ResilientHttpClient } from "./http-client.js";
 
 type ConwayClientOptions = {
   apiUrl: string;
   apiKey: string;
   sandboxId: string;
-};
-
-export type ConwayClient = {
-  apiUrl: string;
-  apiKey: string;
-  sandboxId: string;
-  isLocal: boolean;
-  request(
-    method: string,
-    path: string,
-    body?: unknown,
-    requestOptions?: { retries404?: number },
-  ): Promise<unknown>;
-  exec(command: string, timeout?: number): Promise<ExecResult>;
-  writeFile(filePath: string, content: string): Promise<void>;
-  readFile(filePath: string): Promise<string>;
-  exposePort(port: number): Promise<PortInfo>;
-  removePort(port: number): Promise<void>;
-  createSandbox(options: CreateSandboxOptions): Promise<SandboxInfo>;
-  listSandboxes(): Promise<SandboxInfo[]>;
-  deleteSandbox(sandboxId: string): Promise<void>;
-  getCreditsBalance(): Promise<number>;
-  getCreditsPricing(): Promise<PricingTier[]>;
-  transferCredits(
-    toAddress: string,
-    amountCents: number,
-    note?: string,
-  ): Promise<CreditTransferResult>;
-  registerAutomaton(params: {
-    automatonId: string;
-    automatonAddress: string;
-    creatorAddress: string;
-    name: string;
-    bio?: string;
-    genesisPromptHash?: `0x${string}`;
-    account: PrivateKeyAccount;
-    nonce?: string;
-    chainType?: ChainType;
-    chainIdentity?: ChainIdentity;
-  }): Promise<{ automaton: Record<string, unknown> }>;
-  searchDomains(query: string, tlds?: string): Promise<DomainSearchResult[]>;
-  registerDomain(domain: string, years?: number): Promise<DomainRegistration>;
-  listDnsRecords(domain: string): Promise<DnsRecord[]>;
-  addDnsRecord(
-    domain: string,
-    type: string,
-    host: string,
-    value: string,
-    ttl?: number,
-  ): Promise<DnsRecord>;
-  deleteDnsRecord(domain: string, recordId: string): Promise<void>;
-  listModels(): Promise<ModelInfo[]>;
-  createScopedClient(targetSandboxId: string): ConwayClient;
-};
-
-export type ExecResult = {
-  stdout: string;
-  stderr: string;
-  exitCode: number;
-};
-
-export type PortInfo = {
-  port: number;
-  publicUrl: string;
-  sandboxId: string;
-};
-
-export type CreateSandboxOptions = {
-  name?: string;
-  vcpu?: number;
-  memoryMb?: number;
-  diskGb?: number;
-  region?: string;
-};
-
-export type SandboxInfo = {
-  id: string;
-  status: string;
-  region: string;
-  vcpu: number;
-  memoryMb: number;
-  diskGb: number;
-  terminalUrl?: string;
-  createdAt: string;
-};
-
-export type PricingTier = {
-  name: string;
-  vcpu: number;
-  memoryMb: number;
-  diskGb: number;
-  monthlyCents: number;
-};
-
-export type CreditTransferResult = {
-  transferId: string;
-  status: string;
-  toAddress: string;
-  amountCents: number;
-  balanceAfterCents?: number;
-};
-
-export type DomainSearchResult = {
-  domain: string;
-  available: boolean;
-  registrationPrice?: number;
-  renewalPrice?: number;
-  currency: string;
-};
-
-export type DomainRegistration = {
-  domain: string;
-  status: string;
-  expiresAt?: string;
-  transactionId?: string;
-};
-
-export type DnsRecord = {
-  id: string;
-  type: string;
-  host: string;
-  value: string;
-  ttl?: number;
-  distance?: number;
-};
-
-export type ModelInfo = {
-  id: string;
-  provider: string;
-  pricing: {
-    inputPerMillion: number;
-    outputPerMillion: number;
-  };
 };
 
 export function normalizeSandboxId(value: string | null | undefined): string {
@@ -173,8 +54,10 @@ export function resolveLocalPath(filePath: string): string {
 }
 
 export function createConwayClient(options: ConwayClientOptions): ConwayClient {
+  const { apiUrl, apiKey } = options;
   const sandboxId = normalizeSandboxId(options.sandboxId);
   const isLocal = !sandboxId;
+  const httpClient = new ResilientHttpClient();
 
   const canonicalizePayload = (payload: Record<string, string>): string => {
     const sortedKeys = Object.keys(payload).sort();
@@ -196,18 +79,19 @@ export function createConwayClient(options: ConwayClientOptions): ConwayClient {
     method: string,
     requestPath: string,
     body?: unknown,
-    requestOptions?: { retries404?: number },
+    requestOptions?: { idempotencyKey?: string; retries404?: number },
   ): Promise<unknown> {
-    const max404Retries = requestOptions?.retries404 ?? 0;
+    const max404Retries = requestOptions?.retries404 ?? 3;
 
     for (let attempt = 0; attempt <= max404Retries; attempt++) {
-      const response = await fetch(`${options.apiUrl}${requestPath}`, {
+      const response = await httpClient.request(`${apiUrl}${requestPath}`, {
         method,
         headers: {
           "Content-Type": "application/json",
-          Authorization: options.apiKey,
+          Authorization: apiKey,
         },
         body: body ? JSON.stringify(body) : undefined,
+        idempotencyKey: requestOptions?.idempotencyKey,
       });
 
       if (response.status === 404 && attempt < max404Retries) {
@@ -253,6 +137,7 @@ export function createConwayClient(options: ConwayClientOptions): ConwayClient {
         "POST",
         `/v1/sandboxes/${sandboxId}/exec`,
         { command: wrappedCommand, timeout },
+        { idempotencyKey: randomUUID() },
       ) as {
         stdout?: string;
         stderr?: string;
@@ -437,8 +322,9 @@ export function createConwayClient(options: ConwayClientOptions): ConwayClient {
       amount_cents: amountCents,
       note,
     };
-
-    const result = await request("POST", "/v1/credits/transfer", payload) as {
+    const result = await request("POST", "/v1/credits/transfer", payload, {
+      idempotencyKey: randomUUID(),
+    }) as {
       transfer_id?: string;
       id?: string;
       status?: string;
@@ -675,7 +561,7 @@ export function createConwayClient(options: ConwayClientOptions): ConwayClient {
 
     for (const url of urls) {
       try {
-        const response = await fetch(url, {
+        const response = await httpClient.request(url, {
           headers: { Authorization: options.apiKey },
         });
 
@@ -721,18 +607,13 @@ export function createConwayClient(options: ConwayClientOptions): ConwayClient {
 
   function createScopedClient(targetSandboxId: string): ConwayClient {
     return createConwayClient({
-      apiUrl: options.apiUrl,
-      apiKey: options.apiKey,
+      apiUrl,
+      apiKey,
       sandboxId: targetSandboxId,
     });
   }
 
   return {
-    apiUrl: options.apiUrl,
-    apiKey: options.apiKey,
-    sandboxId,
-    isLocal,
-    request,
     exec,
     writeFile,
     readFile,
