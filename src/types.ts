@@ -264,6 +264,219 @@ export interface ConwayClient {
   createScopedClient(targetSandboxId: string): ConwayClient;
 }
 
+export type AgentState =
+  | "setup"
+  | "waking"
+  | "running"
+  | "sleeping"
+  | "low_compute"
+  | "critical"
+  | "dead";
+
+export type InputSource =
+  | "heartbeat"
+  | "creator"
+  | "agent"
+  | "system"
+  | "wakeup";
+
+export interface ToolCallResult {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+  result: string;
+  durationMs: number;
+  error?: string;
+}
+
+export interface AgentTurn {
+  id: string;
+  timestamp: string;
+  state: AgentState;
+  input?: string;
+  inputSource?: InputSource;
+  thinking: string;
+  toolCalls: ToolCallResult[];
+  tokenUsage: TokenUsage;
+  costCents: number;
+}
+
+export type TransactionType =
+  | "credit_check"
+  | "credit_purchase"
+  | "inference"
+  | "tool_use"
+  | "transfer_in"
+  | "transfer_out"
+  | "funding_request"
+  | "topup"
+  | "x402_payment";
+
+export interface Transaction {
+  id: string;
+  type: TransactionType;
+  amountCents?: number;
+  balanceAfterCents?: number;
+  description: string;
+  timestamp: string;
+}
+
+export interface HeartbeatEntry {
+  name: string;
+  schedule: string;
+  task: string;
+  enabled: boolean;
+  lastRun?: string;
+  nextRun?: string;
+  params?: Record<string, unknown>;
+}
+
+export interface InstalledTool {
+  id: string;
+  name: string;
+  type: "builtin" | "mcp" | "custom";
+  config?: Record<string, unknown>;
+  installedAt: string;
+  enabled: boolean;
+}
+
+export type ModificationType =
+  | "code_edit"
+  | "code_revert"
+  | "tool_install"
+  | "mcp_install"
+  | "config_change"
+  | "port_expose"
+  | "vm_deploy"
+  | "heartbeat_change"
+  | "prompt_change"
+  | "skill_install"
+  | "skill_remove"
+  | "soul_update"
+  | "registry_update"
+  | "child_spawn"
+  | "upstream_pull"
+  | "upstream_reset";
+
+export interface ModificationEntry {
+  id: string;
+  timestamp: string;
+  type: ModificationType;
+  description: string;
+  filePath?: string;
+  diff?: string;
+  reversible: boolean;
+}
+
+export interface SkillRequirements {
+  bins?: string[];
+  env?: string[];
+}
+
+export type SkillSource = "builtin" | "git" | "url" | "self";
+
+export interface Skill {
+  name: string;
+  description: string;
+  autoActivate: boolean;
+  requires?: SkillRequirements;
+  instructions: string;
+  source: SkillSource;
+  path: string;
+  enabled: boolean;
+  installedAt: string;
+}
+
+export type ChildStatus = "spawning" | "running" | "sleeping" | "dead" | "unknown";
+
+export interface ChildAutomaton {
+  id: string;
+  name: string;
+  address: string;
+  sandboxId: string;
+  genesisPrompt: string;
+  creatorMessage?: string;
+  fundedAmountCents: number;
+  status: ChildStatus;
+  createdAt: string;
+  lastChecked?: string;
+  chainType?: ChainType;
+}
+
+export interface RegistryEntry {
+  agentId: string;
+  agentURI: string;
+  chain: string;
+  contractAddress: string;
+  txHash: string;
+  registeredAt: string;
+}
+
+export interface ReputationEntry {
+  id: string;
+  fromAgent: string;
+  toAgent: string;
+  score: number;
+  comment: string;
+  txHash?: string;
+  createdAt: string;
+}
+
+export interface InboxMessage {
+  id: string;
+  from: string;
+  to: string;
+  content: string;
+  signedAt: string;
+  createdAt: string;
+  replyTo?: string;
+}
+
+export interface AutomatonDatabase {
+  getIdentity(key: string): string | undefined;
+  setIdentity(key: string, value: string): void;
+  insertTurn(turn: AgentTurn): void;
+  getRecentTurns(limit: number): AgentTurn[];
+  getTurnById(id: string): AgentTurn | undefined;
+  getTurnCount(): number;
+  insertToolCall(turnId: string, call: ToolCallResult): void;
+  getToolCallsForTurn(turnId: string): ToolCallResult[];
+  getHeartbeatEntries(): HeartbeatEntry[];
+  upsertHeartbeatEntry(entry: HeartbeatEntry): void;
+  updateHeartbeatLastRun(name: string, timestamp: string): void;
+  insertTransaction(txn: Transaction): void;
+  getRecentTransactions(limit: number): Transaction[];
+  getInstalledTools(): InstalledTool[];
+  installTool(tool: InstalledTool): void;
+  removeTool(id: string): void;
+  insertModification(mod: ModificationEntry): void;
+  getRecentModifications(limit: number): ModificationEntry[];
+  getKV(key: string): string | undefined;
+  setKV(key: string, value: string): void;
+  deleteKV(key: string): void;
+  deleteKVReturning(key: string): string | undefined;
+  getSkills(enabledOnly?: boolean): Skill[];
+  getSkillByName(name: string): Skill | undefined;
+  upsertSkill(skill: Skill): void;
+  removeSkill(name: string): void;
+  getChildren(): ChildAutomaton[];
+  getChildById(id: string): ChildAutomaton | undefined;
+  insertChild(child: ChildAutomaton): void;
+  updateChildStatus(id: string, status: ChildStatus): void;
+  getRegistryEntry(): RegistryEntry | undefined;
+  setRegistryEntry(entry: RegistryEntry): void;
+  insertReputation(entry: ReputationEntry): void;
+  getReputation(agentAddress?: string): ReputationEntry[];
+  insertInboxMessage(msg: InboxMessage): void;
+  getUnprocessedInboxMessages(limit: number): InboxMessage[];
+  markInboxMessageProcessed(id: string): void;
+  getAgentState(): AgentState;
+  setAgentState(state: AgentState): void;
+  runTransaction<T>(fn: () => T): T;
+  close(): void;
+  raw: import("better-sqlite3").Database;
+}
+
 export type SurvivalTier = "dead" | "critical" | "low_compute" | "normal" | "high";
 
 export const SURVIVAL_THRESHOLDS = {
