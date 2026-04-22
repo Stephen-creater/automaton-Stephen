@@ -550,3 +550,60 @@ export interface InferenceClient {
   setLowComputeMode(enabled: boolean): void;
   getDefaultModel(): string;
 }
+
+export type LogLevel = "debug" | "info" | "warn" | "error" | "fatal";
+
+export interface LogEntry {
+  timestamp: string;
+  level: LogLevel;
+  module: string;
+  message: string;
+  context?: Record<string, unknown>;
+  error?: {
+    message: string;
+    stack?: string;
+    code?: string;
+  };
+}
+
+export const LOG_LEVEL_PRIORITY: Record<LogLevel, number> = {
+  debug: 10,
+  info: 20,
+  warn: 30,
+  error: 40,
+  fatal: 50,
+};
+
+export type MetricType = "counter" | "gauge" | "histogram";
+
+export interface MetricEntry {
+  name: string;
+  value: number;
+  type: MetricType;
+  labels: Record<string, string>;
+  timestamp: string;
+}
+
+export interface MetricSnapshot {
+  counters: Map<string, number>;
+  gauges: Map<string, number>;
+  histograms: Map<string, number[]>;
+}
+
+export type AlertSeverity = "info" | "warning" | "critical";
+
+export interface AlertRule {
+  name: string;
+  severity: AlertSeverity;
+  message: string;
+  cooldownMs: number;
+  condition: (metrics: MetricSnapshot) => boolean;
+}
+
+export interface AlertEvent {
+  rule: string;
+  severity: AlertSeverity;
+  message: string;
+  firedAt: string;
+  metricValues: Record<string, number>;
+}
