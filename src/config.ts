@@ -3,70 +3,12 @@ import path from "path";
 import type { ChainType } from "./identity/chain.js";
 import { loadApiKeyFromConfig } from "./identity/provision.js";
 import { getAutomatonDir } from "./identity/wallet.js";
-
-export type TreasuryPolicy = {
-  maxSingleTransferCents: number;
-  maxHourlyTransferCents: number;
-  maxDailyTransferCents: number;
-  minimumReserveCents: number;
-  maxX402PaymentCents: number;
-  x402AllowedDomains: string[];
-  transferCooldownMs: number;
-  maxTransfersPerTurn: number;
-  maxInferenceDailyCents: number;
-  requireConfirmationAboveCents: number;
-};
-
-export type SoulConfig = {
-  soulAlignmentThreshold: number;
-  requireCreatorApprovalForPurposeChange: boolean;
-  enableSoulReflection: boolean;
-};
-
-export type ModelStrategyConfig = {
-  inferenceModel: string;
-  lowComputeModel: string;
-  criticalModel: string;
-  maxTokensPerTurn: number;
-  hourlyBudgetCents: number;
-  sessionBudgetCents: number;
-  perCallCeilingCents: number;
-  enableModelFallback: boolean;
-  anthropicApiVersion: string;
-};
-
-export type AutomatonConfig = {
-  name: string;
-  genesisPrompt: string;
-  creatorMessage?: string;
-  creatorAddress: string;
-  registeredWithConway: boolean;
-  walletAddress: string;
-  chainType: ChainType;
-  sandboxId: string;
-  conwayApiUrl: string;
-  conwayApiKey?: string;
-  openaiApiKey?: string;
-  anthropicApiKey?: string;
-  ollamaBaseUrl?: string;
-  inferenceModel: string;
-  maxTokensPerTurn: number;
-  heartbeatConfigPath: string;
-  dbPath: string;
-  logLevel: "debug" | "info" | "warn" | "error";
-  version: string;
-  skillsDir: string;
-  agentId?: string;
-  maxChildren: number;
-  maxTurnsPerCycle?: number;
-  childSandboxMemoryMb?: number;
-  parentAddress?: string;
-  socialRelayUrl?: string;
-  treasuryPolicy: TreasuryPolicy;
-  soulConfig: SoulConfig;
-  modelStrategy: ModelStrategyConfig;
-  rpcUrl?: string;
-};
+import type { AutomatonConfig, TreasuryPolicy } from "./types.js";
+import {
+  DEFAULT_MODEL_STRATEGY_CONFIG,
+  DEFAULT_SOUL_CONFIG,
+  DEFAULT_TREASURY_POLICY,
+} from "./types.js";
 
 export const DEFAULT_CONFIG: Pick<
   AutomatonConfig,
@@ -97,37 +39,6 @@ export const DEFAULT_CONFIG: Pick<
   maxTurnsPerCycle: 25,
   childSandboxMemoryMb: 1024,
   socialRelayUrl: "https://social.conway.tech",
-};
-
-export const DEFAULT_TREASURY_POLICY: TreasuryPolicy = {
-  maxSingleTransferCents: 5000,
-  maxHourlyTransferCents: 10000,
-  maxDailyTransferCents: 25000,
-  minimumReserveCents: 1000,
-  maxX402PaymentCents: 100,
-  x402AllowedDomains: ["conway.tech"],
-  transferCooldownMs: 0,
-  maxTransfersPerTurn: 2,
-  maxInferenceDailyCents: 50000,
-  requireConfirmationAboveCents: 1000,
-};
-
-export const DEFAULT_SOUL_CONFIG: SoulConfig = {
-  soulAlignmentThreshold: 0.5,
-  requireCreatorApprovalForPurposeChange: false,
-  enableSoulReflection: true,
-};
-
-export const DEFAULT_MODEL_STRATEGY_CONFIG: ModelStrategyConfig = {
-  inferenceModel: "gpt-5.2",
-  lowComputeModel: "gpt-5-mini",
-  criticalModel: "gpt-5-mini",
-  maxTokensPerTurn: 4096,
-  hourlyBudgetCents: 0,
-  sessionBudgetCents: 0,
-  perCallCeilingCents: 0,
-  enableModelFallback: true,
-  anthropicApiVersion: "2023-06-01",
 };
 
 const CONFIG_FILENAME = "automaton.json";

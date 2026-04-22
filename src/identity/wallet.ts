@@ -6,20 +6,7 @@ import nacl from "tweetnacl";
 import bs58 from "bs58";
 import type { ChainIdentity, ChainType } from "./chain.js";
 import { EvmChainIdentity, SolanaChainIdentity } from "./chain.js";
-
-export type LocalWalletData = {
-  chainType: ChainType;
-  createdAt: string;
-  privateKey?: string;
-  secretKey?: string;
-};
-
-export type WalletResult = {
-  account: PrivateKeyAccount | null;
-  chainIdentity: ChainIdentity;
-  chainType: ChainType;
-  isNew: boolean;
-};
+import type { LocalWalletData, WalletResult } from "../types.js";
 
 export function getAutomatonDir(): string {
   return path.join(process.env.HOME || "/root", ".automaton");

@@ -1,9 +1,5 @@
 import fs from "fs";
-
-export type EnvironmentInfo = {
-  type: string;
-  sandboxId: string;
-};
+import type { EnvironmentInfo } from "../types.js";
 
 export function detectEnvironment(): EnvironmentInfo {
   const envSandboxId = process.env.CONWAY_SANDBOX_ID?.trim();

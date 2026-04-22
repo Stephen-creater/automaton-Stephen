@@ -5,12 +5,7 @@ import { SiweMessage } from "siwe";
 import { getWallet } from "./wallet.js";
 import { buildSiwsMessage } from "./siws.js";
 import type { ChainIdentity } from "./chain.js";
-
-export type ProvisionResult = {
-  apiKey: string;
-  walletAddress: string;
-  keyPrefix: string;
-};
+import type { ProvisionResult } from "../types.js";
 
 const DEFAULT_API_URL = "https://api.conway.tech";
 
