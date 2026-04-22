@@ -1,6 +1,10 @@
 import fs from "fs";
 import path from "path";
 import { execSync } from "child_process";
+import { randomUUID } from "crypto";
+import { keccak256, toHex } from "viem";
+import type { PrivateKeyAccount } from "viem";
+import type { ChainIdentity, ChainType } from "../identity/chain.js";
 
 type ConwayClientOptions = {
   apiUrl: string;
@@ -34,8 +38,31 @@ export type ConwayClient = {
     amountCents: number,
     note?: string,
   ): Promise<CreditTransferResult>;
+  registerAutomaton(params: {
+    automatonId: string;
+    automatonAddress: string;
+    creatorAddress: string;
+    name: string;
+    bio?: string;
+    genesisPromptHash?: `0x${string}`;
+    account: PrivateKeyAccount;
+    nonce?: string;
+    chainType?: ChainType;
+    chainIdentity?: ChainIdentity;
+  }): Promise<{ automaton: Record<string, unknown> }>;
   searchDomains(query: string, tlds?: string): Promise<DomainSearchResult[]>;
   registerDomain(domain: string, years?: number): Promise<DomainRegistration>;
+  listDnsRecords(domain: string): Promise<DnsRecord[]>;
+  addDnsRecord(
+    domain: string,
+    type: string,
+    host: string,
+    value: string,
+    ttl?: number,
+  ): Promise<DnsRecord>;
+  deleteDnsRecord(domain: string, recordId: string): Promise<void>;
+  listModels(): Promise<ModelInfo[]>;
+  createScopedClient(targetSandboxId: string): ConwayClient;
 };
 
 export type ExecResult = {
@@ -100,6 +127,24 @@ export type DomainRegistration = {
   transactionId?: string;
 };
 
+export type DnsRecord = {
+  id: string;
+  type: string;
+  host: string;
+  value: string;
+  ttl?: number;
+  distance?: number;
+};
+
+export type ModelInfo = {
+  id: string;
+  provider: string;
+  pricing: {
+    inputPerMillion: number;
+    outputPerMillion: number;
+  };
+};
+
 export function normalizeSandboxId(value: string | null | undefined): string {
   const normalized = value?.trim() || "";
 
@@ -130,6 +175,22 @@ export function resolveLocalPath(filePath: string): string {
 export function createConwayClient(options: ConwayClientOptions): ConwayClient {
   const sandboxId = normalizeSandboxId(options.sandboxId);
   const isLocal = !sandboxId;
+
+  const canonicalizePayload = (payload: Record<string, string>): string => {
+    const sortedKeys = Object.keys(payload).sort();
+    const sorted: Record<string, string> = {};
+
+    for (const key of sortedKeys) {
+      sorted[key] = payload[key];
+    }
+
+    return JSON.stringify(sorted);
+  };
+
+  const hashIdentityPayload = (payload: Record<string, string>): `0x${string}` => {
+    const canonical = canonicalizePayload(payload);
+    return keccak256(toHex(canonical));
+  };
 
   async function request(
     method: string,
@@ -396,6 +457,103 @@ export function createConwayClient(options: ConwayClientOptions): ConwayClient {
     };
   }
 
+  async function registerAutomaton(params: {
+    automatonId: string;
+    automatonAddress: string;
+    creatorAddress: string;
+    name: string;
+    bio?: string;
+    genesisPromptHash?: `0x${string}`;
+    account: PrivateKeyAccount;
+    nonce?: string;
+    chainType?: ChainType;
+    chainIdentity?: ChainIdentity;
+  }): Promise<{ automaton: Record<string, unknown> }> {
+    const {
+      automatonId,
+      automatonAddress,
+      creatorAddress,
+      name,
+      bio,
+      genesisPromptHash,
+      account,
+      chainIdentity,
+    } = params;
+
+    const nonce = params.nonce ?? randomUUID();
+    const isSolana = params.chainType === "solana";
+
+    const payload: Record<string, string> = {
+      automaton_id: automatonId,
+      automaton_address: automatonAddress,
+      creator_address: creatorAddress,
+      name,
+      bio: bio || "",
+    };
+
+    if (genesisPromptHash) {
+      payload.genesis_prompt_hash = genesisPromptHash;
+    }
+
+    const payloadHash = hashIdentityPayload(payload);
+    let signature: string;
+
+    if (isSolana && chainIdentity) {
+      const signatureMessage = JSON.stringify({ automatonId, nonce, payloadHash });
+      signature = await chainIdentity.signMessage(signatureMessage);
+    } else if (isSolana && !chainIdentity) {
+      throw new Error("Solana registration requires chainIdentity.");
+    } else {
+      const domain = {
+        name: "AIWS Automaton",
+        version: "1",
+        chainId: 8453,
+      };
+
+      const types = {
+        Register: [
+          { name: "automatonId", type: "string" },
+          { name: "nonce", type: "string" },
+          { name: "payloadHash", type: "bytes32" },
+        ],
+      };
+
+      const message = {
+        automatonId,
+        nonce,
+        payloadHash,
+      };
+
+      signature = await account.signTypedData({
+        domain,
+        types,
+        primaryType: "Register",
+        message,
+      });
+    }
+
+    const body: Record<string, unknown> = {
+      automaton_id: automatonId,
+      automaton_address: automatonAddress,
+      creator_address: creatorAddress,
+      name,
+      bio: bio || "",
+      nonce,
+      signature,
+      payload_hash: payloadHash,
+    };
+
+    if (genesisPromptHash) {
+      body.genesis_prompt_hash = genesisPromptHash;
+    }
+
+    if (isSolana) {
+      body.chain_type = "solana";
+    }
+
+    return request("POST", "/v1/automatons/register", body) as Promise<{ automaton: Record<string, unknown> }>;
+  }
+
   async function searchDomains(query: string, tlds?: string): Promise<DomainSearchResult[]> {
     const params = new URLSearchParams({ query });
     if (tlds) {
@@ -451,6 +609,124 @@ export function createConwayClient(options: ConwayClientOptions): ConwayClient {
     };
   }
 
+  async function listDnsRecords(domain: string): Promise<DnsRecord[]> {
+    const result = await request(
+      "GET",
+      `/v1/domains/${encodeURIComponent(domain)}/dns`,
+    ) as { records?: Array<Record<string, unknown>> } | Array<Record<string, unknown>>;
+
+    const records = Array.isArray(result) ? result : result.records || [];
+
+    return records.map((record) => ({
+      id: String(record.id || record.record_id || ""),
+      type: String(record.type || ""),
+      host: String(record.host || record.name || ""),
+      value: String(record.value || record.answer || ""),
+      ttl: typeof record.ttl === "number" ? record.ttl : undefined,
+      distance: typeof record.distance === "number"
+        ? record.distance
+        : typeof record.priority === "number"
+          ? record.priority
+          : undefined,
+    }));
+  }
+
+  async function addDnsRecord(
+    domain: string,
+    type: string,
+    host: string,
+    value: string,
+    ttl?: number,
+  ): Promise<DnsRecord> {
+    const result = await request(
+      "POST",
+      `/v1/domains/${encodeURIComponent(domain)}/dns`,
+      { type, host, value, ttl: ttl || 3600 },
+    ) as {
+      id?: string;
+      record_id?: string;
+      type?: string;
+      host?: string;
+      value?: string;
+      ttl?: number;
+    };
+
+    return {
+      id: String(result.id || result.record_id || ""),
+      type: String(result.type || type),
+      host: String(result.host || host),
+      value: String(result.value || value),
+      ttl: typeof result.ttl === "number" ? result.ttl : ttl || 3600,
+    };
+  }
+
+  async function deleteDnsRecord(domain: string, recordId: string): Promise<void> {
+    await request(
+      "DELETE",
+      `/v1/domains/${encodeURIComponent(domain)}/dns/${encodeURIComponent(recordId)}`,
+    );
+  }
+
+  async function listModels(): Promise<ModelInfo[]> {
+    const urls = [
+      "https://inference.conway.tech/v1/models",
+      `${options.apiUrl}/v1/models`,
+    ];
+
+    for (const url of urls) {
+      try {
+        const response = await fetch(url, {
+          headers: { Authorization: options.apiKey },
+        });
+
+        if (!response.ok) {
+          continue;
+        }
+
+        const result = await response.json() as {
+          data?: Array<Record<string, unknown>>;
+          models?: Array<Record<string, unknown>>;
+        };
+        const raw = result.data || result.models || [];
+
+        return raw
+          .filter((model) => model.available !== false)
+          .map((model) => ({
+            id: String(model.id || ""),
+            provider: String(model.provider || model.owned_by || "unknown"),
+            pricing: {
+              inputPerMillion: Number(
+                model.pricing && typeof model.pricing === "object"
+                  ? ((model.pricing as Record<string, unknown>).input_per_million ??
+                    (model.pricing as Record<string, unknown>).input_per_1m_tokens_usd ??
+                    0)
+                  : 0,
+              ),
+              outputPerMillion: Number(
+                model.pricing && typeof model.pricing === "object"
+                  ? ((model.pricing as Record<string, unknown>).output_per_million ??
+                    (model.pricing as Record<string, unknown>).output_per_1m_tokens_usd ??
+                    0)
+                  : 0,
+              ),
+            },
+          }));
+      } catch {
+        continue;
+      }
+    }
+
+    return [];
+  }
+
+  function createScopedClient(targetSandboxId: string): ConwayClient {
+    return createConwayClient({
+      apiUrl: options.apiUrl,
+      apiKey: options.apiKey,
+      sandboxId: targetSandboxId,
+    });
+  }
+
   return {
     apiUrl: options.apiUrl,
     apiKey: options.apiKey,
@@ -468,8 +744,14 @@ export function createConwayClient(options: ConwayClientOptions): ConwayClient {
     getCreditsBalance,
     getCreditsPricing,
     transferCredits,
+    registerAutomaton,
     searchDomains,
     registerDomain,
+    listDnsRecords,
+    addDnsRecord,
+    deleteDnsRecord,
+    listModels,
+    createScopedClient,
   };
 }
 
