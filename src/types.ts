@@ -1149,6 +1149,21 @@ export interface OnchainTransactionRow {
   createdAt: string;
 }
 
+export interface GitStatus {
+  branch: string;
+  staged: string[];
+  modified: string[];
+  untracked: string[];
+  clean: boolean;
+}
+
+export interface GitLogEntry {
+  hash: string;
+  message: string;
+  author: string;
+  date: string;
+}
+
 export interface SoulModel {
   format: "soul/v1";
   version: number;

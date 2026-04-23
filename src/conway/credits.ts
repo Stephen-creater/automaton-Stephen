@@ -8,3 +8,7 @@ export function getSurvivalTier(creditsCents: number): SurvivalTier {
   if (creditsCents >= 0) return "critical";
   return "dead";
 }
+
+export function formatCredits(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`;
+}
