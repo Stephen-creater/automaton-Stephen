@@ -1,27 +1,36 @@
 import fs from "fs";
 import path from "path";
-import type { ConwayClient, AutomatonDatabase } from "../types.js";
+import type {
+  ConwayClient,
+  AutomatonDatabase,
+} from "../types.js";
+import { logModification } from "./audit-log.js";
 
-const PROTECTED_FILES = Object.freeze([
+const PROTECTED_FILES: readonly string[] = Object.freeze([
   "wallet.json",
   "config.json",
   "state.db",
   "state.db-wal",
   "state.db-shm",
   "constitution.md",
+  "injection-defense.ts",
+  "self-mod/code.ts",
+  "self-mod/audit-log.ts",
+  "self-mod/upstream.ts",
+  "self-mod/tools-manager.ts",
   "agent/tools.ts",
   "agent/policy-engine.ts",
   "agent/policy-rules/index.ts",
   "skills/loader.ts",
-  "self-mod/code.ts",
   "automaton.json",
   "package.json",
   "SOUL.md",
 ]);
 
-const BLOCKED_DIRECTORY_PATTERNS = Object.freeze([
+const BLOCKED_DIRECTORY_PATTERNS: readonly string[] = Object.freeze([
   ".ssh",
   ".gnupg",
+  ".gpg",
   ".aws",
   ".azure",
   ".gcloud",
@@ -36,28 +45,7 @@ const BLOCKED_DIRECTORY_PATTERNS = Object.freeze([
 
 const MAX_MODIFICATIONS_PER_HOUR = 20;
 const MAX_MODIFICATION_SIZE = 100_000;
-
-export function isProtectedFile(filePath: string): boolean {
-  const resolved = path.resolve(filePath);
-
-  for (const pattern of PROTECTED_FILES) {
-    if (resolved === path.resolve(pattern) || resolved.endsWith(`${path.sep}${pattern.replace(/\//g, path.sep)}`)) {
-      return true;
-    }
-  }
-
-  for (const pattern of BLOCKED_DIRECTORY_PATTERNS) {
-    if (
-      resolved.includes(`${path.sep}${pattern}${path.sep}`)
-      || resolved.endsWith(`${path.sep}${pattern}`)
-      || (pattern.startsWith("/") && resolved.startsWith(pattern))
-    ) {
-      return true;
-    }
-  }
-
-  return false;
-}
+const MAX_DIFF_SIZE = 10_000;
 
 function resolveAndValidatePath(filePath: string): string | null {
   try {
@@ -65,62 +53,99 @@ function resolveAndValidatePath(filePath: string): string | null {
     if (resolved.startsWith("~")) {
       resolved = path.join(process.env.HOME || "/root", resolved.slice(1));
     }
+
     resolved = path.resolve(resolved);
+
     const baseDir = path.resolve(process.cwd());
-    if (!resolved.startsWith(`${baseDir}${path.sep}`) && resolved !== baseDir) {
+    if (!resolved.startsWith(baseDir + path.sep) && resolved !== baseDir) {
       return null;
     }
+
     if (fs.existsSync(resolved)) {
       const realPath = fs.realpathSync(resolved);
-      if (!realPath.startsWith(`${baseDir}${path.sep}`) && realPath !== baseDir) {
+      if (!realPath.startsWith(baseDir + path.sep) && realPath !== baseDir) {
         return null;
       }
       resolved = realPath;
     }
+
     return resolved;
   } catch {
     return null;
   }
 }
 
-function isRateLimited(db: AutomatonDatabase): boolean {
-  const recent = db.getRecentModifications(MAX_MODIFICATIONS_PER_HOUR);
-  if (recent.length < MAX_MODIFICATIONS_PER_HOUR) {
-    return false;
+export function isProtectedFile(filePath: string): boolean {
+  const resolved = path.resolve(filePath);
+
+  for (const pattern of PROTECTED_FILES) {
+    const patternResolved = path.resolve(pattern);
+    if (resolved === patternResolved) return true;
+    if (resolved.endsWith(path.sep + pattern)) return true;
+    if (pattern.includes("/") && resolved.endsWith(path.sep + pattern.replace(/\//g, path.sep))) return true;
   }
-  const oldest = recent[0];
-  return Boolean(oldest && new Date(oldest.timestamp).getTime() > Date.now() - 60 * 60 * 1000);
+
+  for (const pattern of BLOCKED_DIRECTORY_PATTERNS) {
+    if (
+      resolved.includes(path.sep + pattern + path.sep) ||
+      resolved.endsWith(path.sep + pattern) ||
+      resolved === pattern
+    ) {
+      return true;
+    }
+    if (pattern.startsWith("/") && resolved.startsWith(pattern)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function isRateLimited(db: AutomatonDatabase): boolean {
+  const recentMods = db.getRecentModifications(MAX_MODIFICATIONS_PER_HOUR);
+  if (recentMods.length < MAX_MODIFICATIONS_PER_HOUR) return false;
+
+  const oldest = recentMods[0];
+  if (!oldest) return false;
+
+  const hourAgo = Date.now() - 60 * 60 * 1000;
+  return new Date(oldest.timestamp).getTime() > hourAgo;
 }
 
 export function validateModification(
   db: AutomatonDatabase,
   filePath: string,
-  contentSize: number,
+  contentLength: number,
 ): {
   allowed: boolean;
   reason?: string;
   checks: Array<{ name: string; passed: boolean; detail: string }>;
 } {
+  const protectedFile = isProtectedFile(filePath);
+  const resolvedPath = resolveAndValidatePath(filePath);
+  const rateLimited = isRateLimited(db);
+  const tooLarge = contentLength > MAX_MODIFICATION_SIZE;
+
   const checks = [
     {
       name: "protected_file",
-      passed: !isProtectedFile(filePath),
-      detail: isProtectedFile(filePath) ? "protected path" : "ok",
+      passed: !protectedFile,
+      detail: protectedFile ? "target is protected" : "ok",
     },
     {
       name: "path_validation",
-      passed: resolveAndValidatePath(filePath) !== null,
-      detail: resolveAndValidatePath(filePath) ? "ok" : "invalid path",
+      passed: resolvedPath !== null,
+      detail: resolvedPath ? "ok" : "invalid or suspicious path",
     },
     {
       name: "rate_limit",
-      passed: !isRateLimited(db),
-      detail: isRateLimited(db) ? "too many edits in the last hour" : "ok",
+      passed: !rateLimited,
+      detail: rateLimited ? "too many modifications in last hour" : "ok",
     },
     {
       name: "size_limit",
-      passed: contentSize <= MAX_MODIFICATION_SIZE,
-      detail: contentSize <= MAX_MODIFICATION_SIZE ? "ok" : "content too large",
+      passed: !tooLarge,
+      detail: tooLarge ? `content too large (${contentLength} > ${MAX_MODIFICATION_SIZE})` : "ok",
     },
   ];
 
@@ -162,15 +187,39 @@ export async function editFile(
     };
   }
 
+  let oldContent = "";
+  try {
+    if (fs.existsSync(resolvedPath)) {
+      oldContent = fs.readFileSync(resolvedPath, "utf-8");
+    }
+  } catch {
+    oldContent = "";
+  }
+
   await conway.writeFile(resolvedPath, newContent);
-  db.insertModification({
-    id: `${Date.now()}`,
-    timestamp: new Date().toISOString(),
-    type: "code_edit",
-    description: reason,
+
+  logModification(db, "code_edit", reason, {
     filePath: resolvedPath,
+    diff: buildSimpleDiff(oldContent, newContent),
     reversible: true,
   });
 
   return { success: true };
+}
+
+function buildSimpleDiff(oldContent: string, newContent: string): string {
+  if (oldContent === newContent) {
+    return "[no changes]";
+  }
+
+  const diff = [
+    "--- before",
+    oldContent.slice(0, MAX_DIFF_SIZE / 2),
+    "+++ after",
+    newContent.slice(0, MAX_DIFF_SIZE / 2),
+  ].join("\n");
+
+  return diff.length > MAX_DIFF_SIZE
+    ? `${diff.slice(0, MAX_DIFF_SIZE)}\n...[truncated]`
+    : diff;
 }

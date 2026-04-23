@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 8;
 
 export const CREATE_TABLES = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -346,6 +346,58 @@ export const CREATE_TABLES = `
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  CREATE TABLE IF NOT EXISTS soul_history (
+    id TEXT PRIMARY KEY,
+    version INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    change_source TEXT NOT NULL,
+    change_reason TEXT,
+    previous_version_id TEXT,
+    approved_by TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS heartbeat_schedule (
+    task_name TEXT PRIMARY KEY,
+    cron_expression TEXT NOT NULL,
+    interval_ms INTEGER,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    priority INTEGER NOT NULL DEFAULT 0,
+    timeout_ms INTEGER NOT NULL DEFAULT 30000,
+    max_retries INTEGER NOT NULL DEFAULT 1,
+    tier_minimum TEXT NOT NULL DEFAULT 'dead',
+    last_run_at TEXT,
+    next_run_at TEXT,
+    last_result TEXT,
+    last_error TEXT,
+    run_count INTEGER NOT NULL DEFAULT 0,
+    fail_count INTEGER NOT NULL DEFAULT 0,
+    lease_owner TEXT,
+    lease_expires_at TEXT,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS heartbeat_history (
+    id TEXT PRIMARY KEY,
+    task_name TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    result TEXT NOT NULL,
+    duration_ms INTEGER,
+    error TEXT,
+    idempotency_key TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS wake_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    payload TEXT NOT NULL DEFAULT '{}',
+    consumed_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
   CREATE INDEX IF NOT EXISTS idx_turns_timestamp ON turns(timestamp);
   CREATE INDEX IF NOT EXISTS idx_turns_state ON turns(state);
   CREATE INDEX IF NOT EXISTS idx_tool_calls_turn ON tool_calls(turn_id);
@@ -386,4 +438,10 @@ export const CREATE_TABLES = `
     ON task_graph(goal_id, status, priority);
   CREATE INDEX IF NOT EXISTS idx_child_lifecycle_events_child
     ON child_lifecycle_events(child_id, created_at);
+  CREATE INDEX IF NOT EXISTS idx_soul_history_version
+    ON soul_history(version, created_at);
+  CREATE INDEX IF NOT EXISTS idx_heartbeat_history_task
+    ON heartbeat_history(task_name, started_at);
+  CREATE INDEX IF NOT EXISTS idx_wake_events_unconsumed
+    ON wake_events(consumed_at, id);
 `;

@@ -25,6 +25,10 @@ import type {
   InboxMessageRow,
   ChildLifecycleEventRow,
   ChildLifecycleState,
+  SoulHistoryRow,
+  HeartbeatScheduleRow,
+  HeartbeatHistoryRow,
+  WakeEventRow,
 } from "../types.js";
 import { CREATE_TABLES, SCHEMA_VERSION } from "./schema.js";
 
@@ -653,8 +657,14 @@ export function deleteChild(db: DatabaseType, childId: string): void {
   db.prepare("DELETE FROM children WHERE id = ?").run(childId);
 }
 
-export function consumeNextWakeEvent(_db: DatabaseType): undefined {
-  return undefined;
+export function consumeNextWakeEvent(db: DatabaseType): WakeEventRow | undefined {
+  const row = db.prepare(
+    `UPDATE wake_events
+     SET consumed_at = datetime('now')
+     WHERE id = (SELECT id FROM wake_events WHERE consumed_at IS NULL ORDER BY id ASC LIMIT 1)
+     RETURNING *`,
+  ).get() as any | undefined;
+  return row ? deserializeWakeEventRow(row) : undefined;
 }
 
 export function claimInboxMessages(db: DatabaseType, limit: number): InboxMessageRow[] {
@@ -780,6 +790,45 @@ export function updateChildStatus(db: DatabaseType, childId: string, status: str
   ).run(status, childId);
 }
 
+export function insertSoulHistory(db: DatabaseType, row: SoulHistoryRow): void {
+  db.prepare(
+    `INSERT INTO soul_history (id, version, content, content_hash, change_source, change_reason, previous_version_id, approved_by, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    row.id,
+    row.version,
+    row.content,
+    row.contentHash,
+    row.changeSource,
+    row.changeReason,
+    row.previousVersionId,
+    row.approvedBy,
+    row.createdAt,
+  );
+}
+
+export function getSoulHistory(db: DatabaseType, limit: number = 50): SoulHistoryRow[] {
+  const rows = db.prepare(
+    "SELECT * FROM soul_history ORDER BY version DESC, created_at DESC LIMIT ?",
+  ).all(limit) as any[];
+  return rows.map(deserializeSoulHistoryRow);
+}
+
+export function getSoulVersion(db: DatabaseType, version: number): SoulHistoryRow | undefined {
+  const row = db.prepare("SELECT * FROM soul_history WHERE version = ?").get(version) as any | undefined;
+  return row ? deserializeSoulHistoryRow(row) : undefined;
+}
+
+export function getCurrentSoulVersion(db: DatabaseType): number {
+  const row = db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM soul_history").get() as { version: number };
+  return row.version;
+}
+
+export function getLatestSoulHistory(db: DatabaseType): SoulHistoryRow | undefined {
+  const row = db.prepare("SELECT * FROM soul_history ORDER BY version DESC, created_at DESC LIMIT 1").get() as any | undefined;
+  return row ? deserializeSoulHistoryRow(row) : undefined;
+}
+
 export function withTransaction<T>(db: DatabaseType, fn: () => T): T {
   const tx = db.transaction(() => fn());
   return tx();
@@ -821,6 +870,125 @@ export function insertGoal(
 export function getGoalById(db: DatabaseType, id: string): GoalRow | undefined {
   const row = db.prepare("SELECT * FROM goals WHERE id = ?").get(id) as any | undefined;
   return row ? deserializeGoalRow(row) : undefined;
+}
+
+export function getHeartbeatSchedule(db: DatabaseType): HeartbeatScheduleRow[] {
+  const rows = db.prepare("SELECT * FROM heartbeat_schedule ORDER BY priority ASC").all() as any[];
+  return rows.map(deserializeHeartbeatScheduleRow);
+}
+
+export function getHeartbeatTask(db: DatabaseType, taskName: string): HeartbeatScheduleRow | undefined {
+  const row = db.prepare("SELECT * FROM heartbeat_schedule WHERE task_name = ?").get(taskName) as any | undefined;
+  return row ? deserializeHeartbeatScheduleRow(row) : undefined;
+}
+
+export function updateHeartbeatSchedule(
+  db: DatabaseType,
+  taskName: string,
+  updates: Partial<HeartbeatScheduleRow>,
+): void {
+  const setClauses: string[] = [];
+  const params: unknown[] = [];
+
+  if (updates.lastRunAt !== undefined) { setClauses.push("last_run_at = ?"); params.push(updates.lastRunAt); }
+  if (updates.nextRunAt !== undefined) { setClauses.push("next_run_at = ?"); params.push(updates.nextRunAt); }
+  if (updates.lastResult !== undefined) { setClauses.push("last_result = ?"); params.push(updates.lastResult); }
+  if (updates.lastError !== undefined) { setClauses.push("last_error = ?"); params.push(updates.lastError); }
+  if (updates.runCount !== undefined) { setClauses.push("run_count = ?"); params.push(updates.runCount); }
+  if (updates.failCount !== undefined) { setClauses.push("fail_count = ?"); params.push(updates.failCount); }
+  if (updates.leaseOwner !== undefined) { setClauses.push("lease_owner = ?"); params.push(updates.leaseOwner); }
+  if (updates.leaseExpiresAt !== undefined) { setClauses.push("lease_expires_at = ?"); params.push(updates.leaseExpiresAt); }
+  if (updates.enabled !== undefined) { setClauses.push("enabled = ?"); params.push(updates.enabled); }
+  if (updates.cronExpression !== undefined) { setClauses.push("cron_expression = ?"); params.push(updates.cronExpression); }
+  if (updates.intervalMs !== undefined) { setClauses.push("interval_ms = ?"); params.push(updates.intervalMs); }
+  if (updates.timeoutMs !== undefined) { setClauses.push("timeout_ms = ?"); params.push(updates.timeoutMs); }
+  if (updates.maxRetries !== undefined) { setClauses.push("max_retries = ?"); params.push(updates.maxRetries); }
+  if (updates.priority !== undefined) { setClauses.push("priority = ?"); params.push(updates.priority); }
+  if (updates.tierMinimum !== undefined) { setClauses.push("tier_minimum = ?"); params.push(updates.tierMinimum); }
+
+  if (setClauses.length === 0) return;
+  setClauses.push("updated_at = datetime('now')");
+  params.push(taskName);
+
+  db.prepare(`UPDATE heartbeat_schedule SET ${setClauses.join(", ")} WHERE task_name = ?`).run(...params);
+}
+
+export function upsertHeartbeatSchedule(db: DatabaseType, row: HeartbeatScheduleRow): void {
+  db.prepare(
+    `INSERT OR REPLACE INTO heartbeat_schedule
+     (task_name, cron_expression, interval_ms, enabled, priority, timeout_ms, max_retries, tier_minimum,
+      last_run_at, next_run_at, last_result, last_error, run_count, fail_count, lease_owner, lease_expires_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+  ).run(
+    row.taskName,
+    row.cronExpression,
+    row.intervalMs,
+    row.enabled,
+    row.priority,
+    row.timeoutMs,
+    row.maxRetries,
+    row.tierMinimum,
+    row.lastRunAt,
+    row.nextRunAt,
+    row.lastResult,
+    row.lastError,
+    row.runCount,
+    row.failCount,
+    row.leaseOwner,
+    row.leaseExpiresAt,
+  );
+}
+
+export function insertHeartbeatHistory(db: DatabaseType, entry: HeartbeatHistoryRow): void {
+  db.prepare(
+    `INSERT INTO heartbeat_history (id, task_name, started_at, completed_at, result, duration_ms, error, idempotency_key)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    entry.id,
+    entry.taskName,
+    entry.startedAt,
+    entry.completedAt,
+    entry.result,
+    entry.durationMs,
+    entry.error,
+    entry.idempotencyKey,
+  );
+}
+
+export function acquireTaskLease(db: DatabaseType, taskName: string, owner: string, ttlMs: number): boolean {
+  const expiresAt = new Date(Date.now() + ttlMs).toISOString();
+  const result = db.prepare(
+    `UPDATE heartbeat_schedule
+     SET lease_owner = ?, lease_expires_at = ?, updated_at = datetime('now')
+     WHERE task_name = ?
+       AND (lease_owner IS NULL OR lease_expires_at < datetime('now'))`,
+  ).run(owner, expiresAt, taskName);
+  return result.changes > 0;
+}
+
+export function releaseTaskLease(db: DatabaseType, taskName: string, owner: string): void {
+  db.prepare(
+    `UPDATE heartbeat_schedule
+     SET lease_owner = NULL, lease_expires_at = NULL, updated_at = datetime('now')
+     WHERE task_name = ? AND lease_owner = ?`,
+  ).run(taskName, owner);
+}
+
+export function clearExpiredLeases(db: DatabaseType): number {
+  const result = db.prepare(
+    `UPDATE heartbeat_schedule
+     SET lease_owner = NULL, lease_expires_at = NULL, updated_at = datetime('now')
+     WHERE lease_expires_at IS NOT NULL AND lease_expires_at < datetime('now')`,
+  ).run();
+  return result.changes;
+}
+
+export function pruneExpiredDedupKeys(_db: DatabaseType): number {
+  return 0;
+}
+
+export function insertWakeEvent(db: DatabaseType, source: string, reason: string, payload?: object): void {
+  db.prepare("INSERT INTO wake_events (source, reason, payload) VALUES (?, ?, ?)").run(source, reason, JSON.stringify(payload ?? {}));
 }
 
 export function updateGoalStatus(db: DatabaseType, id: string, status: GoalStatus): void {
@@ -1018,6 +1186,38 @@ function deserializeTaskGraphRow(row: any): TaskGraphRow {
   };
 }
 
+function deserializeHeartbeatScheduleRow(row: any): HeartbeatScheduleRow {
+  return {
+    taskName: row.task_name,
+    cronExpression: row.cron_expression,
+    intervalMs: row.interval_ms ?? null,
+    enabled: row.enabled,
+    priority: row.priority,
+    timeoutMs: row.timeout_ms,
+    maxRetries: row.max_retries,
+    tierMinimum: row.tier_minimum,
+    lastRunAt: row.last_run_at ?? null,
+    nextRunAt: row.next_run_at ?? null,
+    lastResult: row.last_result ?? null,
+    lastError: row.last_error ?? null,
+    runCount: row.run_count,
+    failCount: row.fail_count,
+    leaseOwner: row.lease_owner ?? null,
+    leaseExpiresAt: row.lease_expires_at ?? null,
+  };
+}
+
+function deserializeWakeEventRow(row: any): WakeEventRow {
+  return {
+    id: row.id,
+    source: row.source,
+    reason: row.reason,
+    payload: row.payload,
+    consumedAt: row.consumed_at ?? null,
+    createdAt: row.created_at,
+  };
+}
+
 function deserializeLifecycleEventRow(row: any): ChildLifecycleEventRow {
   return {
     id: row.id,
@@ -1026,6 +1226,20 @@ function deserializeLifecycleEventRow(row: any): ChildLifecycleEventRow {
     toState: row.to_state,
     reason: row.reason ?? null,
     metadata: row.metadata ?? "{}",
+    createdAt: row.created_at,
+  };
+}
+
+function deserializeSoulHistoryRow(row: any): SoulHistoryRow {
+  return {
+    id: row.id,
+    version: row.version,
+    content: row.content,
+    contentHash: row.content_hash,
+    changeSource: row.change_source,
+    changeReason: row.change_reason ?? null,
+    previousVersionId: row.previous_version_id ?? null,
+    approvedBy: row.approved_by ?? null,
     createdAt: row.created_at,
   };
 }

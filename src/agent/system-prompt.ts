@@ -137,7 +137,7 @@ export function buildSystemPrompt(params: {
     buildRuntimeContext(params),
     getOrchestratorStatus(params.db.raw),
     `Lineage:\n${getLineageSummary(params.db, params.config)}`,
-    `Soul:\n${soul.summary}`,
+    `Soul:\n${soul ? summarizeSoul(soul) : "No soul loaded."}`,
     `Available tools:\n${formatToolList(params.tools)}`,
   ];
 
@@ -168,4 +168,15 @@ export function buildWakeupPrompt(params: {
     "pending_items:",
     pending,
   ].join("\n");
+}
+
+function summarizeSoul(soul: import("../types.js").SoulModel): string {
+  const lines = [
+    `name: ${soul.name || "unnamed"}`,
+    soul.corePurpose ? `core_purpose: ${soul.corePurpose}` : "",
+    soul.capabilities ? `capabilities: ${soul.capabilities}` : "",
+    soul.relationships ? `relationships: ${soul.relationships}` : "",
+    soul.financialCharacter ? `financial: ${soul.financialCharacter}` : "",
+  ].filter(Boolean);
+  return lines.join("\n");
 }

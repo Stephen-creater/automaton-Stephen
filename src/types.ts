@@ -331,6 +331,75 @@ export interface HeartbeatEntry {
   params?: Record<string, unknown>;
 }
 
+export interface HeartbeatConfig {
+  entries: HeartbeatEntry[];
+  defaultIntervalMs: number;
+  lowComputeMultiplier: number;
+}
+
+export interface TickContext {
+  tickId: string;
+  startedAt: Date;
+  creditBalance: number;
+  usdcBalance: number;
+  survivalTier: SurvivalTier;
+  lowComputeMultiplier: number;
+  config: HeartbeatConfig;
+  db: import("better-sqlite3").Database;
+}
+
+export type HeartbeatTaskFn = (
+  ctx: TickContext,
+  taskCtx: HeartbeatLegacyContext,
+) => Promise<{ shouldWake: boolean; message?: string }>;
+
+export interface HeartbeatLegacyContext {
+  identity: AutomatonIdentity;
+  config: AutomatonConfig;
+  db: AutomatonDatabase;
+  conway: ConwayClient;
+  social?: SocialClientInterface;
+}
+
+export interface HeartbeatScheduleRow {
+  taskName: string;
+  cronExpression: string;
+  intervalMs: number | null;
+  enabled: number;
+  priority: number;
+  timeoutMs: number;
+  maxRetries: number;
+  tierMinimum: string;
+  lastRunAt: string | null;
+  nextRunAt: string | null;
+  lastResult: "success" | "failure" | "timeout" | "skipped" | null;
+  lastError: string | null;
+  runCount: number;
+  failCount: number;
+  leaseOwner: string | null;
+  leaseExpiresAt: string | null;
+}
+
+export interface HeartbeatHistoryRow {
+  id: string;
+  taskName: string;
+  startedAt: string;
+  completedAt: string | null;
+  result: "success" | "failure" | "timeout" | "skipped";
+  durationMs: number | null;
+  error: string | null;
+  idempotencyKey: string | null;
+}
+
+export interface WakeEventRow {
+  id: number;
+  source: string;
+  reason: string;
+  payload: string;
+  consumedAt: string | null;
+  createdAt: string;
+}
+
 export interface InstalledTool {
   id: string;
   name: string;
@@ -374,6 +443,16 @@ export interface SkillRequirements {
 }
 
 export type SkillSource = "builtin" | "git" | "url" | "self";
+
+export interface SkillFrontmatter {
+  name?: string;
+  description?: string;
+  "auto-activate"?: boolean;
+  requires?: {
+    bins?: string[];
+    env?: string[];
+  };
+}
 
 export interface Skill {
   name: string;
@@ -432,6 +511,30 @@ export interface RegistryEntry {
   contractAddress: string;
   txHash: string;
   registeredAt: string;
+}
+
+export interface AgentService {
+  name: string;
+  endpoint: string;
+}
+
+export interface AgentCard {
+  type: string;
+  name: string;
+  description?: string;
+  address?: string;
+  services: AgentService[];
+  x402Support?: boolean;
+  active?: boolean;
+}
+
+export interface DiscoveredAgent {
+  agentId: string;
+  owner?: string;
+  agentURI: string;
+  chain: string;
+  name?: string;
+  description?: string;
 }
 
 export interface ReputationEntry {
@@ -999,13 +1102,105 @@ export interface ParentChildMessage {
 }
 
 export const MESSAGE_LIMITS = {
-  maxContentLength: 20_000,
+  maxContentLength: 64_000,
+  maxTotalSize: 128_000,
+  replayWindowMs: 300_000,
+  maxOutboundPerHour: 100,
 } as const;
 
-export interface SoulModel {
-  summary: string;
+export interface SignedMessagePayload {
+  from: string;
+  to: string;
   content: string;
-  path: string;
+  signed_at: string;
+  signature: string;
+  reply_to?: string;
+}
+
+export interface MessageValidationResult {
+  valid: boolean;
+  errors: string[];
+}
+
+export interface DiscoveryConfig {
+  ipfsGateway: string;
+  maxScanCount: number;
+  maxConcurrentFetches: number;
+  maxCardSizeBytes: number;
+  fetchTimeoutMs: number;
+}
+
+export const DEFAULT_DISCOVERY_CONFIG: DiscoveryConfig = {
+  ipfsGateway: "https://ipfs.io",
+  maxScanCount: 100,
+  maxConcurrentFetches: 5,
+  maxCardSizeBytes: 64_000,
+  fetchTimeoutMs: 10_000,
+};
+
+export interface OnchainTransactionRow {
+  id: string;
+  txHash: string;
+  chain: string;
+  operation: string;
+  status: "pending" | "confirmed" | "failed";
+  gasUsed: number | null;
+  metadata: string;
+  createdAt: string;
+}
+
+export interface SoulModel {
+  format: "soul/v1";
+  version: number;
+  updatedAt: string;
+  name: string;
+  address: string;
+  creator: string;
+  bornAt: string;
+  constitutionHash: string;
+  genesisPromptOriginal: string;
+  genesisAlignment: number;
+  lastReflected: string;
+  corePurpose: string;
+  values: string[];
+  behavioralGuidelines: string[];
+  personality: string;
+  boundaries: string[];
+  strategy: string;
+  capabilities: string;
+  relationships: string;
+  financialCharacter: string;
+  rawContent: string;
+  contentHash: string;
+}
+
+export interface SoulValidationResult {
+  valid: boolean;
+  errors: string[];
+  warnings: string[];
+  sanitized: SoulModel;
+}
+
+export interface SoulHistoryRow {
+  id: string;
+  version: number;
+  content: string;
+  contentHash: string;
+  changeSource: "manual" | "reflection" | "migration" | "system";
+  changeReason: string | null;
+  previousVersionId: string | null;
+  approvedBy: string | null;
+  createdAt: string;
+}
+
+export interface SoulReflection {
+  currentAlignment: number;
+  suggestedUpdates: Array<{
+    section: keyof Pick<SoulModel, "corePurpose" | "values" | "behavioralGuidelines" | "personality" | "boundaries" | "strategy">;
+    reason: string;
+    suggestedContent: string;
+  }>;
+  autoUpdated: string[];
 }
 
 export type ModelProvider = "openai" | "anthropic" | "conway" | "ollama" | "other";
