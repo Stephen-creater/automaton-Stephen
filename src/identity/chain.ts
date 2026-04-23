@@ -10,6 +10,19 @@ export interface ChainIdentity {
   signMessage(message: string): Promise<string>;
 }
 
+export function isValidAddress(address: string, chainType: ChainType): boolean {
+  if (chainType === "solana") {
+    try {
+      const decoded = bs58.decode(address);
+      return decoded.length === 32;
+    } catch {
+      return false;
+    }
+  }
+
+  return /^0x[a-fA-F0-9]{40}$/.test(address);
+}
+
 export class EvmChainIdentity implements ChainIdentity {
   readonly chainType: ChainType = "evm";
   readonly address: string;
