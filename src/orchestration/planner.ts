@@ -49,27 +49,53 @@ export interface PlannerContext {
 
 export async function planGoal(
   goal: Goal,
-  _context: PlannerContext,
+  context: PlannerContext,
   _inference: UnifiedInferenceClient,
 ): Promise<PlannerOutput> {
+  const likelyComplex = goal.description.split(/\s+/).length > 20 || context.idleAgents > 1;
+  const tasks: PlannedTask[] = likelyComplex
+    ? [
+        {
+          title: `Analyze goal: ${goal.title}`,
+          description: `Break down and inspect the goal requirements: ${goal.description}`,
+          agentRole: "generalist",
+          dependencies: [],
+          estimatedCostCents: 60,
+          priority: 90,
+          timeoutMs: 15 * 60_000,
+        },
+        {
+          title: `Execute goal: ${goal.title}`,
+          description: goal.description,
+          agentRole: "generalist",
+          dependencies: [0],
+          estimatedCostCents: 120,
+          priority: 80,
+          timeoutMs: 45 * 60_000,
+        },
+      ]
+    : [
+        {
+          title: goal.title,
+          description: goal.description,
+          agentRole: "generalist",
+          dependencies: [],
+          estimatedCostCents: 100,
+          priority: 80,
+          timeoutMs: 30 * 60_000,
+        },
+      ];
+
   return {
     analysis: `Planning goal: ${goal.title}`,
-    strategy: "Break the goal into a few concrete tasks and execute in order.",
+    strategy: likelyComplex
+      ? "Split the goal into analysis and execution so orchestration can validate before acting."
+      : "This goal is small enough to execute as a single task.",
     customRoles: [],
-    tasks: [
-      {
-        title: goal.title,
-        description: goal.description,
-        agentRole: "generalist",
-        dependencies: [],
-        estimatedCostCents: 100,
-        priority: 80,
-        timeoutMs: 30 * 60_000,
-      },
-    ],
+    tasks,
     risks: [],
-    estimatedTotalCostCents: 100,
-    estimatedTimeMinutes: 30,
+    estimatedTotalCostCents: tasks.reduce((sum, task) => sum + task.estimatedCostCents, 0),
+    estimatedTimeMinutes: likelyComplex ? 60 : 30,
   };
 }
 

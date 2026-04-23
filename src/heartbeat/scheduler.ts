@@ -47,14 +47,47 @@ function timeoutPromise(ms: number): { promise: Promise<never>; clear: () => voi
 function isCronDue(cronExpression: string, now: Date): boolean {
   const parts = cronExpression.trim().split(/\s+/);
   if (parts.length !== 5) return false;
-  const minuteField = parts[0];
-  if (minuteField === "*") return true;
-  if (/^\*\/\d+$/.test(minuteField)) {
-    const interval = Number(minuteField.slice(2));
-    return interval > 0 && now.getMinutes() % interval === 0;
+  return (
+    matchCronField(parts[0], now.getMinutes()) &&
+    matchCronField(parts[1], now.getHours()) &&
+    matchCronField(parts[2], now.getDate()) &&
+    matchCronField(parts[3], now.getMonth() + 1) &&
+    matchCronDayField(parts[4], now.getDay())
+  );
+}
+
+function matchCronField(field: string, value: number): boolean {
+  if (field === "*") return true;
+  if (/^\*\/\d+$/.test(field)) {
+    const interval = Number(field.slice(2));
+    return interval > 0 && value % interval === 0;
   }
-  const minute = Number(minuteField);
-  return Number.isInteger(minute) && minute === now.getMinutes();
+  if (field.includes(",")) {
+    return field.split(",").some((part) => matchCronField(part, value));
+  }
+  if (/^\d+-\d+$/.test(field)) {
+    const [start, end] = field.split("-").map(Number);
+    return value >= start && value <= end;
+  }
+  const numeric = Number(field);
+  return Number.isInteger(numeric) && numeric === value;
+}
+
+function matchCronDayField(field: string, day: number): boolean {
+  if (field === "*") return true;
+  return matchCronField(field, day === 0 ? 7 : day);
+}
+
+const TIER_ORDER: Record<string, number> = {
+  dead: 0,
+  critical: 1,
+  low_compute: 2,
+  normal: 3,
+  high: 4,
+};
+
+function tierMeetsMinimum(currentTier: string, minimumTier: string): boolean {
+  return (TIER_ORDER[currentTier] ?? 0) >= (TIER_ORDER[minimumTier] ?? 0);
 }
 
 export class DurableScheduler {
@@ -96,12 +129,13 @@ export class DurableScheduler {
     }
   }
 
-  getDueTasks(_context: TickContext): HeartbeatScheduleRow[] {
+  getDueTasks(context: TickContext): HeartbeatScheduleRow[] {
     const schedule = getHeartbeatSchedule(this.db);
     const now = new Date();
 
     return schedule.filter((row) => {
       if (!row.enabled) return false;
+      if (!tierMeetsMinimum(context.survivalTier, row.tierMinimum)) return false;
       if (row.leaseOwner && row.leaseOwner !== this.ownerId) {
         if (row.leaseExpiresAt && new Date(row.leaseExpiresAt) > now) return false;
       }
@@ -238,5 +272,13 @@ export class DurableScheduler {
   private scheduleRetry(taskName: string): void {
     const retryAt = new Date(Date.now() + 30_000).toISOString();
     updateHeartbeatSchedule(this.db, taskName, { nextRunAt: retryAt });
+  }
+
+  pruneHistory(retentionDays: number): number {
+    const cutoff = new Date(Date.now() - retentionDays * 86400000).toISOString();
+    const result = this.db.prepare(
+      "DELETE FROM heartbeat_history WHERE started_at < ?",
+    ).run(cutoff);
+    return result.changes;
   }
 }

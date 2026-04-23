@@ -268,6 +268,8 @@ export class Orchestrator {
     state: OrchestratorState,
     counters: { tasksAssigned: number; tasksCompleted: number; tasksFailed: number },
   ): Promise<OrchestratorState> {
+    await this.collectAndApplyResults(counters);
+
     const readyTasks = getReadyTasks(this.params.db);
     if (readyTasks.length === 0 && state.goalId) {
       const progress = getGoalProgress(this.params.db, state.goalId);
@@ -423,4 +425,57 @@ export class Orchestrator {
   private getActiveAgentCount(): number {
     return this.params.agentTracker.getIdle().length;
   }
+
+  private async collectAndApplyResults(
+    counters: { tasksAssigned: number; tasksCompleted: number; tasksFailed: number },
+  ): Promise<void> {
+    const processed = await this.params.messaging.processInbox();
+    for (const entry of processed) {
+      if (!entry.success) continue;
+      if (entry.message.type !== "task_result" || !entry.message.taskId) continue;
+
+      const task = getTaskById(this.params.db, entry.message.taskId);
+      if (!task || task.status === "completed" || task.status === "failed") continue;
+
+      try {
+        completeTask(this.params.db, task.id, normalizeTaskResult({
+          success: true,
+          output: entry.message.content,
+          artifacts: [],
+          costCents: task.estimatedCostCents,
+          duration: 0,
+        }));
+        counters.tasksCompleted += 1;
+      } catch (error) {
+        await this.handleFailure(taskNodeFromRow(task), error instanceof Error ? error.message : String(error));
+        counters.tasksFailed += 1;
+      }
+    }
+  }
+}
+
+function taskNodeFromRow(task: ReturnType<typeof getTaskById> extends infer T ? T extends object ? any : never : never): TaskNode {
+  return {
+    id: task.id,
+    parentId: task.parentId,
+    goalId: task.goalId,
+    title: task.title,
+    description: task.description,
+    status: task.status,
+    assignedTo: task.assignedTo,
+    agentRole: task.agentRole,
+    priority: task.priority,
+    dependencies: task.dependencies,
+    result: task.result as any,
+    metadata: {
+      estimatedCostCents: task.estimatedCostCents,
+      actualCostCents: task.actualCostCents,
+      maxRetries: task.maxRetries,
+      retryCount: task.retryCount,
+      timeoutMs: task.timeoutMs,
+      createdAt: task.createdAt,
+      startedAt: task.startedAt,
+      completedAt: task.completedAt,
+    },
+  };
 }

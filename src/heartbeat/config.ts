@@ -5,6 +5,9 @@ import { getAutomatonDir } from "../identity/wallet.js";
 import { createLogger } from "../observability/logger.js";
 
 const logger = createLogger("heartbeat.config");
+const USDC_TOPUP_ENTRY_NAME = "check_usdc_balance";
+const USDC_TOPUP_FAST_SCHEDULE = "*/5 * * * *";
+const USDC_TOPUP_OLD_SCHEDULE = "0 */12 * * *";
 
 const DEFAULT_HEARTBEAT_CONFIG: HeartbeatConfig = {
   entries: [
@@ -28,7 +31,7 @@ export function loadHeartbeatConfig(configPath?: string): HeartbeatConfig {
 
   try {
     const raw = fs.readFileSync(filePath, "utf-8");
-    return parseHeartbeatYaml(raw);
+    return mergeWithDefaults(parseHeartbeatYaml(raw));
   } catch (error) {
     logger.error("Failed to parse heartbeat config", error instanceof Error ? error : undefined);
     return DEFAULT_HEARTBEAT_CONFIG;
@@ -122,6 +125,49 @@ function parseHeartbeatYaml(raw: string): HeartbeatConfig {
     entries: entries.length > 0 ? entries : DEFAULT_HEARTBEAT_CONFIG.entries,
     defaultIntervalMs,
     lowComputeMultiplier,
+  };
+}
+
+function mergeWithDefaults(config: HeartbeatConfig): HeartbeatConfig {
+  const defaults = DEFAULT_HEARTBEAT_CONFIG.entries.map((entry) => ({ ...entry }));
+  const defaultsByName = new Map(defaults.map((entry) => [entry.name, entry]));
+  const mergedByName = new Map(defaultsByName);
+
+  for (const entry of config.entries) {
+    if (!entry?.name) continue;
+    const fallback = defaultsByName.get(entry.name);
+    mergedByName.set(entry.name, {
+      ...(fallback || {}),
+      ...entry,
+      enabled: entry.enabled !== false,
+      task: entry.task || fallback?.task || "",
+      schedule: entry.schedule || fallback?.schedule || "",
+    });
+  }
+
+  const fallbackTopup = defaultsByName.get(USDC_TOPUP_ENTRY_NAME);
+  if (fallbackTopup) {
+    const current = mergedByName.get(USDC_TOPUP_ENTRY_NAME) || fallbackTopup;
+    const migratedSchedule = current.schedule?.trim() === USDC_TOPUP_OLD_SCHEDULE
+      ? USDC_TOPUP_FAST_SCHEDULE
+      : current.schedule || fallbackTopup.schedule;
+    mergedByName.set(USDC_TOPUP_ENTRY_NAME, {
+      ...fallbackTopup,
+      ...current,
+      task: current.task || fallbackTopup.task,
+      schedule: migratedSchedule,
+    });
+  }
+
+  const orderedDefaultEntries = defaults.map(
+    (defaultEntry) => mergedByName.get(defaultEntry.name) || defaultEntry,
+  );
+  const knownNames = new Set(defaults.map((entry) => entry.name));
+  const customEntries = [...mergedByName.values()].filter((entry) => !knownNames.has(entry.name));
+
+  return {
+    ...config,
+    entries: [...orderedDefaultEntries, ...customEntries],
   };
 }
 

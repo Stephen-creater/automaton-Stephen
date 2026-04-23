@@ -70,8 +70,25 @@ export const BUILTIN_TASKS: Record<string, HeartbeatTaskFn> = {
   check_social_inbox: async (_ctx: TickContext, taskCtx: HeartbeatLegacyContext) => {
     if (!taskCtx.social?.poll) return { shouldWake: false };
 
+    const backoffUntil = taskCtx.db.getKV("social_inbox_backoff_until");
+    if (backoffUntil && new Date(backoffUntil) > new Date()) {
+      return { shouldWake: false };
+    }
+
     const cursor = taskCtx.db.getKV("social_inbox_cursor") || undefined;
-    const result = await taskCtx.social.poll(cursor);
+    let result: Awaited<ReturnType<NonNullable<typeof taskCtx.social.poll>>>;
+    try {
+      result = await taskCtx.social.poll(cursor);
+      taskCtx.db.deleteKV("last_social_inbox_error");
+      taskCtx.db.deleteKV("social_inbox_backoff_until");
+    } catch (error) {
+      taskCtx.db.setKV("last_social_inbox_error", JSON.stringify({
+        message: error instanceof Error ? error.message : String(error),
+        timestamp: new Date().toISOString(),
+      }));
+      taskCtx.db.setKV("social_inbox_backoff_until", new Date(Date.now() + 300_000).toISOString());
+      return { shouldWake: false };
+    }
     if (result.nextCursor) {
       taskCtx.db.setKV("social_inbox_cursor", result.nextCursor);
     }
@@ -108,10 +125,17 @@ export const BUILTIN_TASKS: Record<string, HeartbeatTaskFn> = {
         checkedAt: new Date().toISOString(),
       }));
       if (upstream.behind > 0) {
-        return {
-          shouldWake: true,
-          message: `${upstream.behind} new commit(s) on origin/main.`,
-        };
+        const prevBehind = taskCtx.db.getKV("upstream_prev_behind");
+        const behindStr = String(upstream.behind);
+        if (prevBehind !== behindStr) {
+          taskCtx.db.setKV("upstream_prev_behind", behindStr);
+          return {
+            shouldWake: true,
+            message: `${upstream.behind} new commit(s) on origin/main.`,
+          };
+        }
+      } else {
+        taskCtx.db.deleteKV("upstream_prev_behind");
       }
       return { shouldWake: false };
     } catch (error) {
@@ -122,8 +146,49 @@ export const BUILTIN_TASKS: Record<string, HeartbeatTaskFn> = {
     }
   },
 
+  soul_reflection: async (_ctx: TickContext, taskCtx: HeartbeatLegacyContext) => {
+    try {
+      const { reflectOnSoul } = await import("../soul/reflection.js");
+      const reflection = await reflectOnSoul(taskCtx.db.raw);
+
+      taskCtx.db.setKV("last_soul_reflection", JSON.stringify({
+        alignment: reflection.currentAlignment,
+        autoUpdated: reflection.autoUpdated,
+        suggestedUpdates: reflection.suggestedUpdates.length,
+        timestamp: new Date().toISOString(),
+      }));
+
+      if (reflection.suggestedUpdates.length > 0 || reflection.currentAlignment < 0.3) {
+        return {
+          shouldWake: true,
+          message: `Soul reflection: alignment=${reflection.currentAlignment.toFixed(2)}, ${reflection.suggestedUpdates.length} suggested update(s)`,
+        };
+      }
+      return { shouldWake: false };
+    } catch (error) {
+      logger.error("soul_reflection failed", error instanceof Error ? error : undefined);
+      return { shouldWake: false };
+    }
+  },
+
   health_check: async (_ctx: TickContext, taskCtx: HeartbeatLegacyContext) => {
     taskCtx.db.setKV("last_health_check", new Date().toISOString());
     return { shouldWake: false };
+  },
+
+  refresh_models: async (_ctx: TickContext, taskCtx: HeartbeatLegacyContext) => {
+    try {
+      const models = await taskCtx.conway.listModels();
+      taskCtx.db.setKV("last_model_refresh", JSON.stringify({
+        count: models.length,
+        timestamp: new Date().toISOString(),
+      }));
+      return { shouldWake: false };
+    } catch (error) {
+      logger.warn("refresh_models failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { shouldWake: false };
+    }
   },
 };
